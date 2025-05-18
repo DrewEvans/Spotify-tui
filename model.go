@@ -1,7 +1,7 @@
 package main
 
 import (
-	// "log"
+
 
 	// "github.com/charmbracelet/bubbles/textarea"
 	// "github.com/charmbracelet/bubbles/textinput"
@@ -9,11 +9,15 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 
-	"encoding/json"
-    "fmt"
+	"bytes"
+    "encoding/base64"
     "net/http"
+    "net/url"
     "io/ioutil"
-	"os"
+    "os"
+    "encoding/json"
+    "fmt"
+	
 )
 
 const (
@@ -51,8 +55,20 @@ type User struct {
 
 // Msg type for passing user data into the model
 type userMsg struct {
-	data User
-	err  error
+	data  User
+	err   error
+	token string
+}
+
+type curlMsg struct {
+    data string
+    err  error
+}
+
+type spotifyToken struct {
+    AccessToken string `json:"access_token"`
+    TokenType   string `json:"token_type"`
+    ExpiresIn   int    `json:"expires_in"`
 }
 
 // Bubbletea model
@@ -60,6 +76,7 @@ type model struct {
 	user User
 	err  error
 	state int
+	AccessToken string
 }
 
 var (
@@ -72,7 +89,19 @@ var (
 
 // Init kicks off the API call
 func (m model) Init() bubbletea.Cmd {
-	return fetchAPI()
+	return func() bubbletea.Msg {
+        apiKey := os.Getenv("SPOTIFY_TOKEN")
+        if apiKey == "" {
+            var err error
+            apiKey, err = fetchSpotifyToken()
+            if err != nil {
+                return userMsg{err: err}
+            }
+            os.Setenv("SPOTIFY_TOKEN", apiKey)
+        }
+        // Pass the token along with userMsg, or set it in the model after fetchAPI
+        return userMsg{data: User{}, err: nil, token: apiKey}
+    }
 }
 
 // Update handles the incoming message
@@ -84,9 +113,9 @@ func (m model) Update(msg bubbletea.Msg) (bubbletea.Model, bubbletea.Cmd) {
             m.err = msg.err
         } else {
             m.user = msg.data
+            m.AccessToken = msg.token // store the token
         }
         return m, nil
-
     case bubbletea.KeyMsg:
         switch msg.String() {
         case "q", "ctrl+c":
@@ -97,6 +126,24 @@ func (m model) Update(msg bubbletea.Msg) (bubbletea.Model, bubbletea.Cmd) {
         case "esc":
             m.state = defaultView
             return m, nil
+		case "`": // backtick key
+			if m.state == defaultView {
+				token, err := fetchSpotifyToken()
+				if err != nil {
+					m.err = err
+				} else {
+					m.AccessToken = token
+					os.Setenv("SPOTIFY_TOKEN", token)
+				}
+			}
+		case "right":
+			if m.state == playerView {
+				return m, postSkipTrack("next")
+			}
+		case "left":
+			if m.state == playerView {
+				return m, postSkipTrack("previous")
+			}
         }
     }
 
@@ -107,27 +154,32 @@ func (m model) Update(msg bubbletea.Msg) (bubbletea.Model, bubbletea.Cmd) {
 func (m model) View() string {
 	s := appNameStyle.Render(`Termify`) + "\n"
 
+	if m.AccessToken == "" {
+        s += "No access token available.\n"
+    } else {
+		fmt.Println("Access token: ", m.AccessToken)
+        s += "Access token present.\n"
+    }
+	
+	//Default view
 	if m.state == defaultView {
 		s += faintStyle.Render("Press 'p' to enter player.") + "\n\n"
 	}
 
-	if m.err != nil {
-		return fmt.Sprintf("Error: %v\n\nPress 'q' to quit.", m.err)
-	}
-	
-	if m.user.DisplayName == "" {
-		return "Loading user data... \n\npress 'q' | 'ctrl+c' to quit."
-	} else {
-		s += fmt.Sprintf(
-			"User: %s\nFollowers: %d\nSpotify Profile: %s\n",
-			m.user.DisplayName,
-			m.user.Followers.Total,
-			m.user.ExternalUrls.Spotify,
-		)
-	}
+	// if m.user.DisplayName == "" {
+	// 	return "Loading user data... \n\npress 'q' | 'ctrl+c' to quit."
+	// } else {
+	// 	s += fmt.Sprintf(
+	// 		"User: %s\nFollowers: %d\nSpotify Profile: %s\n",
+	// 		m.user.DisplayName,
+	// 		m.user.Followers.Total,
+	// 		m.user.ExternalUrls.Spotify,
+	// 	)
+	// }
 
+	//Spotify Player view 
 	if m.state == playerView {
-		s += "\n\n" + listEnumeratorStyle.Render("play")
+		s += "\n\n" + listEnumeratorStyle.Render("'\u2190' previous track\n'enter' to play & pause\n '\u2192'skip track")
 		s += faintStyle.Render("Press 'esc' to exit player.") + "\n\n"
 	}
 
@@ -140,34 +192,113 @@ func (m model) View() string {
 
 // Command to fetch user data from Spotify
 func fetchAPI() bubbletea.Cmd {
-	url := "https://api.spotify.com/v1/me"
-	apiKey := os.Getenv("SPOTIFY_TOKEN")
-	
-	return func() bubbletea.Msg {
-		req, err := http.NewRequest("GET", url, nil)
-		if err != nil {
-			return userMsg{err: err}
-		}
+    return func() bubbletea.Msg {
+        apiKey := os.Getenv("SPOTIFY_TOKEN")
+        if apiKey == "" {
+            // Try to fetch a new token using client credentials flow
+            var err error
+            apiKey, err = fetchSpotifyToken()
+            if err != nil {
+                return userMsg{err: err}
+            }
+            // Optionally, you can set this token in the environment for later use
+            os.Setenv("SPOTIFY_TOKEN", apiKey)
+        }
 
-		// Replace this with your actual token
+        url := "https://api.spotify.com/v1/me"
+        req, err := http.NewRequest("GET", url, nil)
+        if err != nil {
+            return userMsg{err: err}
+        }
+        req.Header.Set("Authorization", "Bearer "+apiKey)
+        req.Header.Set("Accept", "application/json")
+
+        resp, err := http.DefaultClient.Do(req)
+        if err != nil {
+            return userMsg{err: err}
+        }
+        defer resp.Body.Close()
+
+        body, err := ioutil.ReadAll(resp.Body)
+        if err != nil {
+            return userMsg{err: err}
+        }
+
+        var u User
+        if err := json.Unmarshal(body, &u); err != nil {
+            return userMsg{err: err}
+        }
+        return userMsg{data: u, token: apiKey}
+    }
+}
+
+func postSkipTrack(skipDirection string) bubbletea.Cmd {
+    return func() bubbletea.Msg {
+        apiKey := os.Getenv("SPOTIFY_TOKEN")
+        url := "https://api.spotify.com/v1/me/player/"
+
+        req, err := http.NewRequest("POST", url+skipDirection, nil)
+        if err != nil {
+            return curlMsg{err: err}
+        }
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 		req.Header.Set("Accept", "application/json")
 
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return userMsg{err: err}
-		}
-		defer resp.Body.Close()
+        resp, err := http.DefaultClient.Do(req)
+        if err != nil {
+            return curlMsg{err: err}
+        }
+        defer resp.Body.Close()
 
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			return userMsg{err: err}
+        body, err := ioutil.ReadAll(resp.Body)
+        if err != nil {
+            return curlMsg{err: err}
+        }
+		if skipDirection == "next"{
+			fmt.Println("Next track skipped")
 		}
 
-		var u User
-		if err := json.Unmarshal(body, &u); err != nil {
-			return userMsg{err: err}
+		if skipDirection == "previous" {
+			fmt.Println("track skipped to previous")
 		}
-		return userMsg{data: u}
-	}
+		
+        return curlMsg{data: string(body)}
+    }
+}
+
+func fetchSpotifyToken() (string, error) {
+    clientID := os.Getenv("SPOTIFY_CLIENT_ID")
+    clientSecret := os.Getenv("SPOTIFY_CLIENT_SECRET")
+    if clientID == "" || clientSecret == "" {
+        return "", fmt.Errorf("missing client ID or secret")
+    }
+
+    data := url.Values{}
+    data.Set("grant_type", "client_credentials")
+
+    req, err := http.NewRequest("POST", "https://accounts.spotify.com/api/token", bytes.NewBufferString(data.Encode()))
+    if err != nil {
+        return "", err
+    }
+    req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+    auth := base64.StdEncoding.EncodeToString([]byte(clientID + ":" + clientSecret))
+    req.Header.Set("Authorization", "Basic "+auth)
+
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil {
+        return "", err
+    }
+    defer resp.Body.Close()
+
+    body, err := ioutil.ReadAll(resp.Body)
+    if err != nil {
+        return "", err
+    }
+
+    var token spotifyToken
+    if err := json.Unmarshal(body, &token); err != nil {
+        return "", err
+    }
+	fmt.Println(token.AccessToken)
+    return token.AccessToken, nil
 }
