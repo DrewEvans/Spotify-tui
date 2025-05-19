@@ -1,23 +1,21 @@
 package main
 
 import (
-
-
-	// "github.com/charmbracelet/bubbles/textarea"
-	// "github.com/charmbracelet/bubbles/textinput"
-	bubbletea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-
-
-	"bytes"
+    "bufio"
+    "bytes"
     "encoding/base64"
-    "net/http"
-    "net/url"
-    "io/ioutil"
-    "os"
     "encoding/json"
     "fmt"
-	
+    "io/ioutil"
+    "math/rand"
+    "net/http"
+    "net/url"
+    "os"
+    "strings"
+    "time"
+
+    bubbletea "github.com/charmbracelet/bubbletea"
+    "github.com/charmbracelet/lipgloss"
 )
 
 const (
@@ -27,37 +25,37 @@ const (
 
 // User struct matches the expected JSON from Spotify API
 type User struct {
-	Country     string `json:"country"`
-	DisplayName string `json:"display_name"`
-	Email       string `json:"email"`
-	ExplicitContent struct {
-		FilterEnabled bool `json:"filter_enabled"`
-		FilterLocked  bool `json:"filter_locked"`
-	} `json:"explicit_content"`
-	ExternalUrls struct {
-		Spotify string `json:"spotify"`
-	} `json:"external_urls"`
-	Followers struct {
-		Href  string `json:"href"`
-		Total int    `json:"total"`
-	} `json:"followers"`
-	Href   string `json:"href"`
-	ID     string `json:"id"`
-	Images []struct {
-		URL    string `json:"url"`
-		Height int    `json:"height"`
-		Width  int    `json:"width"`
-	} `json:"images"`
-	Product string `json:"product"`
-	Type    string `json:"type"`
-	URI     string `json:"uri"`
+    Country     string `json:"country"`
+    DisplayName string `json:"display_name"`
+    Email       string `json:"email"`
+    ExplicitContent struct {
+        FilterEnabled bool `json:"filter_enabled"`
+        FilterLocked  bool `json:"filter_locked"`
+    } `json:"explicit_content"`
+    ExternalUrls struct {
+        Spotify string `json:"spotify"`
+    } `json:"external_urls"`
+    Followers struct {
+        Href  string `json:"href"`
+        Total int    `json:"total"`
+    } `json:"followers"`
+    Href   string `json:"href"`
+    ID     string `json:"id"`
+    Images []struct {
+        URL    string `json:"url"`
+        Height int    `json:"height"`
+        Width  int    `json:"width"`
+    } `json:"images"`
+    Product string `json:"product"`
+    Type    string `json:"type"`
+    URI     string `json:"uri"`
 }
 
-// Msg type for passing user data into the model
+// Msg types for Bubble Tea
 type userMsg struct {
-	data  User
-	err   error
-	token string
+    data  User
+    err   error
+    token string
 }
 
 type curlMsg struct {
@@ -65,55 +63,40 @@ type curlMsg struct {
     err  error
 }
 
-type spotifyToken struct {
-    AccessToken string `json:"access_token"`
-    TokenType   string `json:"token_type"`
-    ExpiresIn   int    `json:"expires_in"`
-}
-
 // Bubbletea model
 type model struct {
-	user User
-	err  error
-	state int
-	AccessToken string
+    user        User
+    err         error
+    state       int
+    AccessToken string
 }
 
 var (
-	appNameStyle = lipgloss.NewStyle().Background(lipgloss.Color("99")).Padding(0,1)
-
-	faintStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Faint(true)
-
-	listEnumeratorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).MarginRight(1)
+    appNameStyle        = lipgloss.NewStyle().Background(lipgloss.Color("#1DB954")).Padding(0, 1).Bold(true).Foreground(lipgloss.Color("000"))
+    faintStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Faint(true)
+    listEnumeratorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).MarginRight(1)
 )
 
 // Init kicks off the API call
 func (m model) Init() bubbletea.Cmd {
-	return func() bubbletea.Msg {
+    return func() bubbletea.Msg {
         apiKey := os.Getenv("SPOTIFY_TOKEN")
         if apiKey == "" {
-            var err error
-            apiKey, err = fetchSpotifyToken()
-            if err != nil {
-                return userMsg{err: err}
-            }
-            os.Setenv("SPOTIFY_TOKEN", apiKey)
+            return userMsg{err: fmt.Errorf("No access token. Please authenticate via /login.")}
         }
-        // Pass the token along with userMsg, or set it in the model after fetchAPI
         return userMsg{data: User{}, err: nil, token: apiKey}
     }
 }
 
 // Update handles the incoming message
 func (m model) Update(msg bubbletea.Msg) (bubbletea.Model, bubbletea.Cmd) {
-	switch msg := msg.(type) {
-
+    switch msg := msg.(type) {
     case userMsg:
         if msg.err != nil {
             m.err = msg.err
         } else {
             m.user = msg.data
-            m.AccessToken = msg.token // store the token
+            m.AccessToken = msg.token
         }
         return m, nil
     case bubbletea.KeyMsg:
@@ -126,68 +109,49 @@ func (m model) Update(msg bubbletea.Msg) (bubbletea.Model, bubbletea.Cmd) {
         case "esc":
             m.state = defaultView
             return m, nil
-		case "`": // backtick key
-			if m.state == defaultView {
-				token, err := fetchSpotifyToken()
-				if err != nil {
-					m.err = err
-				} else {
-					m.AccessToken = token
-					os.Setenv("SPOTIFY_TOKEN", token)
-				}
-			}
-		case "right":
-			if m.state == playerView {
-				return m, postSkipTrack("next")
-			}
-		case "left":
-			if m.state == playerView {
-				return m, postSkipTrack("previous")
-			}
+        case "`": // backtick key
+            if m.state == defaultView {
+                m.err = fmt.Errorf("To refresh your token, visit http://127.0.0.1:8888/login in your browser.")
+            }
+        case "right":
+            if m.state == playerView {
+                return m, postSkipTrack("next")
+            }
+        case "left":
+            if m.state == playerView {
+                return m, postSkipTrack("previous")
+            }
         }
     }
-
     return m, nil
 }
 
 // View renders the UI
 func (m model) View() string {
-	s := appNameStyle.Render(`Termify`) + "\n"
+    s := appNameStyle.Render(`Termify`) + "\n"
 
-	if m.AccessToken == "" {
+    if m.AccessToken == "" {
         s += "No access token available.\n"
-    } else {
-		fmt.Println("Access token: ", m.AccessToken)
-        s += "Access token present.\n"
+        s += faintStyle.Render("Visit http://127.0.0.1:8888/login in your browser to authenticate.\n")
+    }     
+
+    if m.err != nil {
+        s += faintStyle.Render(fmt.Sprintf("Error: %v\n", m.err))
     }
-	
-	//Default view
-	if m.state == defaultView {
-		s += faintStyle.Render("Press 'p' to enter player.") + "\n\n"
-	}
 
-	// if m.user.DisplayName == "" {
-	// 	return "Loading user data... \n\npress 'q' | 'ctrl+c' to quit."
-	// } else {
-	// 	s += fmt.Sprintf(
-	// 		"User: %s\nFollowers: %d\nSpotify Profile: %s\n",
-	// 		m.user.DisplayName,
-	// 		m.user.Followers.Total,
-	// 		m.user.ExternalUrls.Spotify,
-	// 	)
-	// }
+    // Default view
+    if m.state == defaultView {
+        s += faintStyle.Render("Press 'p' to enter player.") + "\n\n"
+    }
 
-	//Spotify Player view 
-	if m.state == playerView {
-		s += "\n\n" + listEnumeratorStyle.Render("'\u2190' previous track\n'enter' to play & pause\n '\u2192'skip track")
-		s += faintStyle.Render("Press 'esc' to exit player.") + "\n\n"
-	}
+    // Spotify Player view
+    if m.state == playerView {
+        s += "\n\n" + listEnumeratorStyle.Render("'\u2190' previous track\n'enter' to play & pause\n '\u2192'skip track")
+        s += faintStyle.Render("Press 'esc' to exit player.") + "\n\n"
+    }
 
-	s += faintStyle.Render("'ctrl+c' | 'q' to quit.") + "\n\n"
-
-		
-	return s
-
+    s += faintStyle.Render("'ctrl+c' | 'q' to quit.") + "\n\n"
+    return s
 }
 
 // Command to fetch user data from Spotify
@@ -195,14 +159,7 @@ func fetchAPI() bubbletea.Cmd {
     return func() bubbletea.Msg {
         apiKey := os.Getenv("SPOTIFY_TOKEN")
         if apiKey == "" {
-            // Try to fetch a new token using client credentials flow
-            var err error
-            apiKey, err = fetchSpotifyToken()
-            if err != nil {
-                return userMsg{err: err}
-            }
-            // Optionally, you can set this token in the environment for later use
-            os.Setenv("SPOTIFY_TOKEN", apiKey)
+            return userMsg{err: fmt.Errorf("No access token. Please authenticate via /login.")}
         }
 
         url := "https://api.spotify.com/v1/me"
@@ -218,6 +175,10 @@ func fetchAPI() bubbletea.Cmd {
             return userMsg{err: err}
         }
         defer resp.Body.Close()
+
+        if resp.StatusCode == 401 {
+            return userMsg{err: fmt.Errorf("token_expired")}
+        }
 
         body, err := ioutil.ReadAll(resp.Body)
         if err != nil {
@@ -235,14 +196,17 @@ func fetchAPI() bubbletea.Cmd {
 func postSkipTrack(skipDirection string) bubbletea.Cmd {
     return func() bubbletea.Msg {
         apiKey := os.Getenv("SPOTIFY_TOKEN")
+        if apiKey == "" {
+            return curlMsg{err: fmt.Errorf("No access token. Please authenticate via /login.")}
+        }
         url := "https://api.spotify.com/v1/me/player/"
 
         req, err := http.NewRequest("POST", url+skipDirection, nil)
         if err != nil {
             return curlMsg{err: err}
         }
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-		req.Header.Set("Accept", "application/json")
+        req.Header.Set("Authorization", "Bearer "+apiKey)
+        req.Header.Set("Accept", "application/json")
 
         resp, err := http.DefaultClient.Do(req)
         if err != nil {
@@ -250,35 +214,57 @@ func postSkipTrack(skipDirection string) bubbletea.Cmd {
         }
         defer resp.Body.Close()
 
+        if resp.StatusCode == 401 {
+            return curlMsg{err: fmt.Errorf("token_expired")}
+        }
+
         body, err := ioutil.ReadAll(resp.Body)
         if err != nil {
             return curlMsg{err: err}
         }
-		if skipDirection == "next"{
-			fmt.Println("Next track skipped")
-		}
-
-		if skipDirection == "previous" {
-			fmt.Println("track skipped to previous")
-		}
-		
         return curlMsg{data: string(body)}
     }
 }
 
-func fetchSpotifyToken() (string, error) {
+// --- OAuth Handlers ---
+
+func loginHandler(w http.ResponseWriter, r *http.Request) {
     clientID := os.Getenv("SPOTIFY_CLIENT_ID")
-    clientSecret := os.Getenv("SPOTIFY_CLIENT_SECRET")
-    if clientID == "" || clientSecret == "" {
-        return "", fmt.Errorf("missing client ID or secret")
+    redirectURI := "http://127.0.0.1:8888/callback"
+    state := generateRandomString(16)
+    scope := "user-read-private user-read-email user-read-playback-state user-modify-playback-state"
+
+    params := url.Values{}
+    params.Add("response_type", "code")
+    params.Add("client_id", clientID)
+    params.Add("scope", scope)
+    params.Add("redirect_uri", redirectURI)
+    params.Add("state", state)
+
+    authURL := "https://accounts.spotify.com/authorize?" + params.Encode()
+    http.Redirect(w, r, authURL, http.StatusFound)
+}
+
+func callbackHandler(w http.ResponseWriter, r *http.Request) {
+    code := r.URL.Query().Get("code")
+    if code == "" {
+        http.Error(w, "No code in callback", http.StatusBadRequest)
+        return
     }
 
+    clientID := os.Getenv("SPOTIFY_CLIENT_ID")
+    clientSecret := os.Getenv("SPOTIFY_CLIENT_SECRET")
+    redirectURI := "http://127.0.0.1:8888/callback"
+
     data := url.Values{}
-    data.Set("grant_type", "client_credentials")
+    data.Set("grant_type", "authorization_code")
+    data.Set("code", code)
+    data.Set("redirect_uri", redirectURI)
 
     req, err := http.NewRequest("POST", "https://accounts.spotify.com/api/token", bytes.NewBufferString(data.Encode()))
     if err != nil {
-        return "", err
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
     }
     req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
     auth := base64.StdEncoding.EncodeToString([]byte(clientID + ":" + clientSecret))
@@ -286,19 +272,74 @@ func fetchSpotifyToken() (string, error) {
 
     resp, err := http.DefaultClient.Do(req)
     if err != nil {
-        return "", err
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
     }
     defer resp.Body.Close()
 
     body, err := ioutil.ReadAll(resp.Body)
     if err != nil {
-        return "", err
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
     }
 
-    var token spotifyToken
-    if err := json.Unmarshal(body, &token); err != nil {
-        return "", err
+    var tokenResp struct {
+        AccessToken  string `json:"access_token"`
+        RefreshToken string `json:"refresh_token"`
+        ExpiresIn    int    `json:"expires_in"`
+        TokenType    string `json:"token_type"`
+        Scope        string `json:"scope"`
     }
-	fmt.Println(token.AccessToken)
-    return token.AccessToken, nil
+    if err := json.Unmarshal(body, &tokenResp); err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    // Write tokens to .env file
+    // Read existing .env lines
+    envLines := make(map[string]string)
+    file, err := os.Open(".env")
+    if err == nil {
+        scanner := bufio.NewScanner(file)
+        for scanner.Scan() {
+            line := scanner.Text()
+            if strings.Contains(line, "=") {
+                parts := strings.SplitN(line, "=", 2)
+                envLines[parts[0]] = parts[1]
+            }
+        }
+        file.Close()
+    }
+
+    // Update or add token values
+    envLines["SPOTIFY_TOKEN"] = tokenResp.AccessToken
+    envLines["SPOTIFY_REFRESH_TOKEN"] = tokenResp.RefreshToken
+
+    // Write back all env variables
+    var newEnv []string
+    for k, v := range envLines {
+        newEnv = append(newEnv, fmt.Sprintf("%s=%s", k, v))
+    }
+    envContent := strings.Join(newEnv, "\n") + "\n"
+    if err := ioutil.WriteFile(".env", []byte(envContent), 0600); err != nil {
+        http.Error(w, "Failed to write .env: "+err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    // Also set them in the current process environment
+    os.Setenv("SPOTIFY_TOKEN", tokenResp.AccessToken)
+    os.Setenv("SPOTIFY_REFRESH_TOKEN", tokenResp.RefreshToken)
+
+    w.Header().Set("Content-Type", "application/json")
+    w.Write(body)
+}
+
+func generateRandomString(n int) string {
+    const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    rand.Seed(time.Now().UnixNano())
+    b := make([]byte, n)
+    for i := range b {
+        b[i] = letters[rand.Intn(len(letters))]
+    }
+    return string(b)
 }
