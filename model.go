@@ -69,10 +69,15 @@ type model struct {
     err         error
     state       int
     AccessToken string
+
+    // Add these fields:
+    NowPlayingTrack  string
+    NowPlayingArtist string
+    NowPlayingAlbum  string
 }
 
 var (
-    appNameStyle        = lipgloss.NewStyle().Background(lipgloss.Color("#1DB954")).Padding(0, 1).Bold(true).Foreground(lipgloss.Color("000"))
+    appNameStyle        = lipgloss.NewStyle().Padding(0, 1).Bold(true).Foreground(lipgloss.Color("#1DB954"))
     faintStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Faint(true)
     listEnumeratorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).MarginRight(1)
 )
@@ -105,7 +110,7 @@ func (m model) Update(msg bubbletea.Msg) (bubbletea.Model, bubbletea.Cmd) {
             return m, bubbletea.Quit
         case "p":
             m.state = playerView
-            return m, nil
+            return m, fetchPlaying()
         case "esc":
             m.state = defaultView
             return m, nil
@@ -128,7 +133,16 @@ func (m model) Update(msg bubbletea.Msg) (bubbletea.Model, bubbletea.Cmd) {
 
 // View renders the UI
 func (m model) View() string {
-    s := appNameStyle.Render(`Termify`) + "\n"
+    s := appNameStyle.Render(`
+ ______    ___  ____   ___ ___  ____  _____  __ __ 
+|      |  /  _]|    \ |   |   ||    ||     ||  |  |
+|      | /  [_ |  D  )| _   _ | |  | |   __||  |  |
+|_|  |_||    _]|    / |  \_/  | |  | |  |_  |  ~  |
+  |  |  |   [_ |    \ |   |   | |  | |   _] |___, |
+  |  |  |     ||  .  \|   |   | |  | |  |   |     |
+  |__|  |_____||__|\_||___|___||____||__|   |____/ 
+                                                   
+`) + "\n"
 
     if m.AccessToken == "" {
         s += "No access token available.\n"
@@ -146,7 +160,17 @@ func (m model) View() string {
 
     // Spotify Player view
     if m.state == playerView {
-        s += "\n\n" + listEnumeratorStyle.Render("'\u2190' previous track\n'enter' to play & pause\n '\u2192'skip track")
+        if m.NowPlayingTrack != "" {
+            s += fmt.Sprintf(
+                "\nNow Playing: %s\nArtist: %s\nAlbum: %s\n",
+                m.NowPlayingTrack,
+                m.NowPlayingArtist,
+                m.NowPlayingAlbum,
+            )
+        } else {
+            s += "\nNo track currently playing.\n"
+        }
+        s += "\n" + listEnumeratorStyle.Render("'\u2190' previous track\n'enter' to play & pause\n '\u2192'skip track")
         s += faintStyle.Render("Press 'esc' to exit player.") + "\n\n"
     }
 
@@ -202,6 +226,39 @@ func postSkipTrack(skipDirection string) bubbletea.Cmd {
         url := "https://api.spotify.com/v1/me/player/"
 
         req, err := http.NewRequest("POST", url+skipDirection, nil)
+        if err != nil {
+            return curlMsg{err: err}
+        }
+        req.Header.Set("Authorization", "Bearer "+apiKey)
+        req.Header.Set("Accept", "application/json")
+
+        resp, err := http.DefaultClient.Do(req)
+        if err != nil {
+            return curlMsg{err: err}
+        }
+        defer resp.Body.Close()
+
+        if resp.StatusCode == 401 {
+            return curlMsg{err: fmt.Errorf("token_expired")}
+        }
+
+        body, err := ioutil.ReadAll(resp.Body)
+        if err != nil {
+            return curlMsg{err: err}
+        }
+        return curlMsg{data: string(body)}
+    }
+}
+
+func fetchPlaying() bubbletea.Cmd {
+    return func() bubbletea.Msg {
+        apiKey := os.Getenv("SPOTIFY_TOKEN")
+        if apiKey == "" {
+            return curlMsg{err: fmt.Errorf("No access token. Please authenticate via /login.")}
+        }
+        url := "https://api.spotify.com/v1/me/player/currently-playing"
+
+        req, err := http.NewRequest("GET", url, nil)
         if err != nil {
             return curlMsg{err: err}
         }
