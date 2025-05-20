@@ -16,11 +16,14 @@ import (
 
     bubbletea "github.com/charmbracelet/bubbletea"
     "github.com/charmbracelet/lipgloss"
+    "github.com/charmbracelet/bubbles/textinput"
+    "github.com/charmbracelet/bubbles/textarea"
 )
 
 const (
     defaultView = iota
     playerView
+    authorizeView
 )
 
 // User struct matches the expected JSON from Spotify API
@@ -69,11 +72,15 @@ type model struct {
     err         error
     state       int
     AccessToken string
+    store *Store
+    client *Client 
 
-    // Add these fields:
     NowPlayingTrack  string
     NowPlayingArtist string
     NowPlayingAlbum  string
+
+    textinput textinput.Model
+    textarea  textarea.Model
 }
 
 var (
@@ -84,6 +91,13 @@ var (
 
 // Init kicks off the API call
 func (m model) Init() bubbletea.Cmd {
+    client, err := m.store.GetUser()
+    if err != nil || client == nil || client.ClientID == "" || client.ClientSecret == "" {
+        m.err = fmt.Errorf("SPOTIFY_CLIENT_ID or SPOTIFY_CLIENT_SECRET is missing in the database. Please provide them to continue.")
+        return nil
+    }
+    m.client = client
+
     return func() bubbletea.Msg {
         apiKey := os.Getenv("SPOTIFY_TOKEN")
         if apiKey == "" {
@@ -107,7 +121,7 @@ func (m model) Update(msg bubbletea.Msg) (bubbletea.Model, bubbletea.Cmd) {
     case bubbletea.KeyMsg:
         switch msg.String() {
         case "q", "ctrl+c":
-            return m, bubbletea.Quit
+            return m, bubbletea.Quit        
         case "p":
             m.state = playerView
             return m, fetchPlaying()
@@ -148,6 +162,13 @@ func (m model) View() string {
         s += "No access token available.\n"
         s += faintStyle.Render("Visit http://127.0.0.1:8888/login in your browser to authenticate.\n")
     }     
+    
+    if m.state == authorizeView {
+        s += "Note title:\n\n"
+		s += m.textinput.View() + "\n\n"
+        s += faintStyle.Render("Please provide them to continue.\n")
+        return s
+    }
 
     if m.err != nil {
         s += faintStyle.Render(fmt.Sprintf("Error: %v\n", m.err))

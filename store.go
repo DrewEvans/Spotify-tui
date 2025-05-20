@@ -62,3 +62,15 @@ func (s *Store) SaveUser(user *Client) error {
     )
     return err
 }
+
+func (s *Store) SaveClientCreds(clientID, clientSecret string) error {
+    // Try update first
+    res, err := s.conn.Exec(`UPDATE user SET client_id=?, client_secret=? WHERE user_id=1`, clientID, clientSecret)
+    affected, _ := res.RowsAffected()
+    if err == nil && affected > 0 {
+        return nil
+    }
+    // Else insert
+    _, err = s.conn.Exec(`INSERT INTO user (client_id, client_secret) VALUES (?, ?)`, clientID, clientSecret)
+    return err
+}
